@@ -1,29 +1,37 @@
 package com.vr.androidrecordexoplayer
 
+import AudioRecorder
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.widget.Button
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
 import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.ui.PlayerView
 import com.vr.androidrecordexoplayer.databinding.ActivityMainBinding
+import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.LinkedList
@@ -34,121 +42,141 @@ import java.util.LinkedList
  */
 class MainActivity : AppCompatActivity() {
 
-    private val TAG = "MainActivity"
+    private lateinit var player: ExoPlayer
+    private lateinit var playerView: PlayerView
+    private lateinit var startBtn: Button
+    private lateinit var stopBtn: Button
 
-    private val HTTP_URL =
-        "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-    private lateinit var binding: ActivityMainBinding
+//    private lateinit var recorder: StreamRecorder
+//    private lateinit var pcmProcessor: PCMExtractorProcessor
 
-    private var player: ExoPlayer? = null
-    private var playWhenReady = true
-    private var currentWindow = 0
-    private var playbackPosition: Long = 0
+    private val streamUrl = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+    private lateinit var audioRecorder: AudioRecorder
+    @UnstableApi
+    private lateinit var recordingAudioProcessor: RecordingAudioProcessor
 
-    private val outputFilePath: String? = null
-    private val recordingThread: HandlerThread? = null
-    private val recordingHandler: Handler? = null
-    private var mediaMuxer: MediaMuxer? = null
-    private var videoTrackIndex :Int? = -1
-    private var audioTrackIndex :Int? = -1
-    private var muxerStarted = false
-    private val videoFrameCount: Long = 0
-    private val audioFrameCount: Long = 0
-    private val videoWidth = 0
-    private val videoHeight = 0
-    private val videoFormat: Format? = null
-    private val audioFormat: Format? = null
-    private val videoPtsOffset: Long = 0
-    private val audioPtsOffset: Long = 0
-
-    private val videoFrames: List<VideoFrame> = LinkedList()
-    private val audioFrames: List<AudioFrame> = LinkedList()
-
-    private val VIDEO_MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC // H.264
-
-    private val VIDEO_FRAME_RATE = 30
-    private val VIDEO_BIT_RATE = 2000000 // 2 Mbps (adjust as needed)
-
-    private val AUDIO_MIME_TYPE = MediaFormat.MIMETYPE_AUDIO_AAC
-    private val AUDIO_BIT_RATE = 128000 // 128 kbps (adjust as needed)
-
-    private val AUDIO_SAMPLE_RATE = 44100
-    private val AUDIO_CHANNEL_COUNT = 2
-
-
+    @OptIn(UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        setContentView(R.layout.activity_main)
 
-        binding.startBtn.setOnClickListener {
+        playerView = findViewById(R.id.video_view)
+        startBtn = findViewById(R.id.startBtn)
+        stopBtn = findViewById(R.id.stopBtn)
 
-        }
+        // 1. Prepare custom RecordingAudioProcessor
+        // 2. Prepare AudioRecorder
+//        val outputFile = File(getExternalFilesDir(Environment.DIRECTORY_MUSIC), "recorded_audio.aac")
+//        recordingAudioProcessor = RecordingAudioProcessor()
+//        audioRecorder = AudioRecorder(outputFile.absolutePath, recordingAudioProcessor)
 
-        binding.stopBtn.setOnClickListener {
+        setupExoPlayerV2()
 
-        }
-
+        startBtn.setOnClickListener { startRecording() }
+        stopBtn.setOnClickListener { stopRecording() }
     }
 
-    override fun onStart() {
-        super.onStart()
-        initializePlayer()
+//    @OptIn(UnstableApi::class)
+//    private fun setupExoPlayer() {
+//        pcmProcessor = PCMExtractorProcessor()
+//
+//        val audioSink: AudioSink = DefaultAudioSink.Builder()
+//            .setAudioProcessors(arrayOf<AudioProcessor>(pcmProcessor))
+//            .build()
+//
+//        val renderersFactory = DefaultRenderersFactory(this)
+//            .setAudioSink(audioSink)
+//
+//        player = ExoPlayer.Builder(this, renderersFactory).build()
+//        playerView.player = player
+//
+//        val mediaItem = MediaItem.fromUri(Uri.parse(streamUrl))
+//        player.setMediaItem(mediaItem)
+//        player.prepare()
+//        player.playWhenReady = true
+//    }
+//
+//    @OptIn(UnstableApi::class)
+//    private fun setupExoPlayerV1() {
+//        val renderersFactory = DefaultRenderersFactory(this)
+//            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+//            .setEnableAudioTrackPlaybackParams(true)
+//
+//        player = ExoPlayer.Builder(this, renderersFactory)
+//            .build()
+//
+//        // Inject audio processor AFTER player is built
+//        val audioComponent = player.audioComponent
+//        audioComponent?.apply {
+//            setAudioProcessors(arrayOf(pcmProcessor))
+//        }
+//
+//        playerView.player = player
+//
+//        val mediaItem = MediaItem.fromUri(Uri.parse(streamUrl))
+//        player.setMediaItem(mediaItem)
+//        player.prepare()
+//        player.playWhenReady = true
+//    }
+
+    @OptIn(UnstableApi::class)
+    private fun setupExoPlayerV2() {
+//        pcmProcessor = PCMExtractorProcessor()
+
+        val file = File(getExternalFilesDir(null), "recorded_audio.mp4")
+        if (file.exists()) file.delete()
+
+        Log.e("TAG-VAIBHAV","Path-  ${file.absolutePath}")
+        audioRecorder = AudioRecorder(file.absolutePath)
+
+        recordingAudioProcessor = RecordingAudioProcessor()
+        val renderersFactory = CustomRenderersFactory(this, recordingAudioProcessor)
+
+        player = ExoPlayer.Builder(this, renderersFactory).build()
+        playerView
+        playerView.player = player
+
+        val mediaItem = MediaItem.fromUri(Uri.parse(streamUrl))
+        player.setMediaItem(mediaItem)
+        player.prepare()
+        player.playWhenReady = true
     }
 
-    override fun onResume() {
-        super.onResume()
-        player?.let {
-            it.playWhenReady = playWhenReady
-        }
-    }
 
-    override fun onPause() {
-        super.onPause()
-        player?.let {
-            playWhenReady = it.playWhenReady
-            playbackPosition = it.currentPosition
-            it.release()
-            player = null
-        }
-    }
 
-    override fun onStop() {
-        super.onStop()
-        player?.release()
-        player = null
+    @OptIn(UnstableApi::class)
+    private fun startRecording() {
+//        val outputFile = "${cacheDir}/recorded_output.mp4"
+//        Log.e("TAG-VAIBHAV","FIle Path- ${outputFile}")
+//        recorder = StreamRecorder(this, outputFile)
+//        recorder.init()
+//
+//        // Send decoded audio PCM to audio encoder
+//        pcmProcessor.onPcmData = { buffer, size, pts ->
+//            recorder.queuePcmData(buffer, size, pts)
+//        }
+//
+//        // Set ExoPlayer output surface to video encoder surface
+//        player.setVideoSurface(recorder.getInputSurface())
+//        audioRecorder.start()
+
+
+        recordingAudioProcessor.setRecorder(audioRecorder)
+
+        audioRecorder.start()
     }
 
     @OptIn(UnstableApi::class)
-    private fun initializePlayer() {
-        Log.setLogLevel(Log.LOG_LEVEL_ALL)
-
-        player = ExoPlayer.Builder(this)
-            .
-            .build().also { exoPlayer ->
-            binding.videoView.player = exoPlayer
-            val mediaItem = MediaItem.fromUri(Uri.parse(HTTP_URL))
-
-            exoPlayer.setMediaItem(mediaItem)
-            exoPlayer.prepare()
-            exoPlayer.playWhenReady = playWhenReady
-
-            exoPlayer.addListener(object : Player.Listener {
-                override fun onPlayerError(error: PlaybackException) {
-                    Log.e(TAG, "Error- ${error.errorCode} , Name- ${error.errorCodeName}")
-                }
-
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    super.onPlaybackStateChanged(playbackState)
-
-                    Log.e(TAG, "Playback State-  ${playbackState}")
-                }
-
-
-            })
-        }
+    private fun stopRecording() {
+//        recorder.stop()
+        recordingAudioProcessor.setRecorder(null)
+        audioRecorder.stop()
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        player.release()
+    }
 
     //
     //    @UnstableApi
@@ -272,192 +300,192 @@ class MainActivity : AppCompatActivity() {
     //            videoPtsOffset = offsetUs;
     //        }
     //    }
-    @UnstableApi
-    private class RecordingAudioRenderer(
-        context: Context?,
-        codecAdapterFactory: MediaCodecAdapter.Factory?,
-        mediaCodecSelector: MediaCodecSelector?,
-        enableDecoderFallback: Boolean,
-        eventHandler: Handler?,
-        eventListener: AudioRendererEventListener?,
-        audioSink: AudioSink?
-    ) : MediaCodecAudioRenderer(
-        context!!,
-        codecAdapterFactory!!,
-        mediaCodecSelector!!,
-        enableDecoderFallback,
-        eventHandler,
-        eventListener,
-        audioSink!!
-    ) {
-        @Throws(ExoPlaybackException::class)
-        override fun onOutputFormatChanged(format: Format, mediaFormat: MediaFormat?) {
-            super.onOutputFormatChanged(format, mediaFormat)
-            audioFormat = format
-            recordingHandler.post(Runnable {
-                if (mediaMuxer == null) {
-                    startMuxer()
-                }
-            })
-        }
-
-        @Throws(ExoPlaybackException::class)
-        override fun processOutputBuffer(
-            positionUs: Long, elapsedRealtimeUs: Long, codec: MediaCodecAdapter?,
-            buffer: ByteBuffer?, bufferIndex: Int, bufferFlags: Int, sampleCount: Int,
-            bufferPresentationTimeUs: Long, isDecodeOnlyBuffer: Boolean,
-            isLastBuffer: Boolean, format: Format
-        ): Boolean {
-            var myAudioCopy: ByteBuffer? = null
-            val myInfo = MediaCodec.BufferInfo()
-            if (!isDecodeOnlyBuffer) {
-                if (buffer != null) {
-                    //  Copy the buffer
-                    myAudioCopy = ByteBuffer.allocateDirect(buffer.capacity())
-                    myAudioCopy.put(buffer)
-                    myAudioCopy.rewind()
-
-                    //  Create a copy of BufferInfo
-                    myInfo[0, buffer.remaining(), (bufferPresentationTimeUs - audioPtsOffset).toInt()
-                        .toLong()] =
-                        bufferFlags
-                    if (myInfo.presentationTimeUs < 0) {
-                        myInfo.presentationTimeUs = 0
-                    }
-                }
-                val finalMyAudioCopy = myAudioCopy
-                recordingHandler.post(Runnable {
-                    if (muxerStarted) {
-                        writeAudioFrame(finalMyAudioCopy, myInfo)
-                    } else {
-                        audioFrames.add(
-                            AudioFrame(
-                                finalMyAudioCopy,
-                                myInfo
-                            )
-                        )
-                    }
-                })
-            }
-            val fullyConsumed = super.processOutputBuffer(
-                positionUs,
-                elapsedRealtimeUs,
-                codec,
-                buffer,
-                bufferIndex,
-                bufferFlags,
-                sampleCount,
-                bufferPresentationTimeUs,
-                isDecodeOnlyBuffer,
-                isLastBuffer,
-                format
-            )
-            if (codec != null && fullyConsumed) {
-                codec.releaseOutputBuffer(bufferIndex, false)
-            }
-            return fullyConsumed
-        }
-
-        override fun onOutputStreamOffsetUsChanged(outputStreamOffsetUs: Long) {
-            super.onOutputStreamOffsetUsChanged(outputStreamOffsetUs)
-            audioPtsOffset = outputStreamOffsetUs
-        }
-    }
-
-
-    fun release() {
-        recordingThread?.quitSafely()
-        stopMuxer()
-    }
-
-    private fun startMuxer() {
-        try {
-            mediaMuxer = MediaMuxer(outputFilePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            val videoFormat = MediaFormat.createVideoFormat(
-                VIDEO_MIME_TYPE,
-                videoWidth,
-                videoHeight
-            )
-            videoFormat.setInteger(
-                MediaFormat.KEY_FRAME_RATE,
-                VIDEO_FRAME_RATE
-            )
-            videoFormat.setInteger(
-                MediaFormat.KEY_BIT_RATE,
-                VIDEO_BIT_RATE
-            )
-            videoTrackIndex = mediaMuxer?.addTrack(videoFormat)
-            val audioFormat = MediaFormat.createAudioFormat(
-                AUDIO_MIME_TYPE,
-                AUDIO_SAMPLE_RATE,
-                AUDIO_CHANNEL_COUNT
-            )
-            audioFormat.setInteger(
-                MediaFormat.KEY_BIT_RATE,
-                AUDIO_BIT_RATE
-            )
-            audioTrackIndex = mediaMuxer?.addTrack(audioFormat)
-            mediaMuxer?.start()
-            muxerStarted = true
-        } catch (e: IOException) {
-            Log.e(
-                TAG,
-                "Error starting muxer",
-                e
-            )
-        }
-    }
-
-    private fun stopMuxer() {
-        if (muxerStarted) {
-            mediaMuxer?.apply {
-                stop()
-                release()
-            }
-            muxerStarted = false
-        }
-    }
-
-    private fun writeVideoFrame(data: ByteBuffer, info: MediaCodec.BufferInfo) {
-        if (!muxerStarted){
-            return
-        }
-        try {
-            data.position(info.offset)
-            data.limit(info.offset + info.size)
-            videoTrackIndex?.let {
-                mediaMuxer?.writeSampleData(it, data, info)
-            }
-        } catch (e: Exception) {
-            Log.e(
-                TAG,
-                "Error writing video frame",
-                e
-            )
-        }
-    }
-
-    private fun writeAudioFrame(data: ByteBuffer, info: MediaCodec.BufferInfo) {
-        if (!muxerStarted){
-            return
-        }
-        try {
-            data.position(info.offset)
-            data.limit(info.offset + info.size)
-            audioTrackIndex?.let {
-                mediaMuxer?.writeSampleData(it, data, info)
-            }
-        } catch (e: Exception) {
-            Log.e(
-                TAG,
-                "Error writing audio frame")
-        }
-    }
-
-
-    private class VideoFrame(var buffer: ByteBuffer?, var info: MediaCodec.BufferInfo)
-
-    private class AudioFrame(var buffer: ByteBuffer?, var info: MediaCodec.BufferInfo)
+//    @UnstableApi
+//    private class RecordingAudioRenderer(
+//        context: Context?,
+//        codecAdapterFactory: MediaCodecAdapter.Factory?,
+//        mediaCodecSelector: MediaCodecSelector?,
+//        enableDecoderFallback: Boolean,
+//        eventHandler: Handler?,
+//        eventListener: AudioRendererEventListener?,
+//        audioSink: AudioSink?
+//    ) : MediaCodecAudioRenderer(
+//        context!!,
+//        codecAdapterFactory!!,
+//        mediaCodecSelector!!,
+//        enableDecoderFallback,
+//        eventHandler,
+//        eventListener,
+//        audioSink!!
+//    ) {
+//        @Throws(ExoPlaybackException::class)
+//        override fun onOutputFormatChanged(format: Format, mediaFormat: MediaFormat?) {
+//            super.onOutputFormatChanged(format, mediaFormat)
+//            audioFormat = format
+//            recordingHandler.post(Runnable {
+//                if (mediaMuxer == null) {
+//                    startMuxer()
+//                }
+//            })
+//        }
+//
+//        @Throws(ExoPlaybackException::class)
+//        override fun processOutputBuffer(
+//            positionUs: Long, elapsedRealtimeUs: Long, codec: MediaCodecAdapter?,
+//            buffer: ByteBuffer?, bufferIndex: Int, bufferFlags: Int, sampleCount: Int,
+//            bufferPresentationTimeUs: Long, isDecodeOnlyBuffer: Boolean,
+//            isLastBuffer: Boolean, format: Format
+//        ): Boolean {
+//            var myAudioCopy: ByteBuffer? = null
+//            val myInfo = MediaCodec.BufferInfo()
+//            if (!isDecodeOnlyBuffer) {
+//                if (buffer != null) {
+//                    //  Copy the buffer
+//                    myAudioCopy = ByteBuffer.allocateDirect(buffer.capacity())
+//                    myAudioCopy.put(buffer)
+//                    myAudioCopy.rewind()
+//
+//                    //  Create a copy of BufferInfo
+//                    myInfo[0, buffer.remaining(), (bufferPresentationTimeUs - audioPtsOffset).toInt()
+//                        .toLong()] =
+//                        bufferFlags
+//                    if (myInfo.presentationTimeUs < 0) {
+//                        myInfo.presentationTimeUs = 0
+//                    }
+//                }
+//                val finalMyAudioCopy = myAudioCopy
+//                recordingHandler.post(Runnable {
+//                    if (muxerStarted) {
+//                        writeAudioFrame(finalMyAudioCopy, myInfo)
+//                    } else {
+//                        audioFrames.add(
+//                            AudioFrame(
+//                                finalMyAudioCopy,
+//                                myInfo
+//                            )
+//                        )
+//                    }
+//                })
+//            }
+//            val fullyConsumed = super.processOutputBuffer(
+//                positionUs,
+//                elapsedRealtimeUs,
+//                codec,
+//                buffer,
+//                bufferIndex,
+//                bufferFlags,
+//                sampleCount,
+//                bufferPresentationTimeUs,
+//                isDecodeOnlyBuffer,
+//                isLastBuffer,
+//                format
+//            )
+//            if (codec != null && fullyConsumed) {
+//                codec.releaseOutputBuffer(bufferIndex, false)
+//            }
+//            return fullyConsumed
+//        }
+//
+//        override fun onOutputStreamOffsetUsChanged(outputStreamOffsetUs: Long) {
+//            super.onOutputStreamOffsetUsChanged(outputStreamOffsetUs)
+//            audioPtsOffset = outputStreamOffsetUs
+//        }
+//    }
+//
+//
+//    fun release() {
+//        recordingThread?.quitSafely()
+//        stopMuxer()
+//    }
+//
+//    private fun startMuxer() {
+//        try {
+//            mediaMuxer = MediaMuxer(outputFilePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+//            val videoFormat = MediaFormat.createVideoFormat(
+//                VIDEO_MIME_TYPE,
+//                videoWidth,
+//                videoHeight
+//            )
+//            videoFormat.setInteger(
+//                MediaFormat.KEY_FRAME_RATE,
+//                VIDEO_FRAME_RATE
+//            )
+//            videoFormat.setInteger(
+//                MediaFormat.KEY_BIT_RATE,
+//                VIDEO_BIT_RATE
+//            )
+//            videoTrackIndex = mediaMuxer?.addTrack(videoFormat)
+//            val audioFormat = MediaFormat.createAudioFormat(
+//                AUDIO_MIME_TYPE,
+//                AUDIO_SAMPLE_RATE,
+//                AUDIO_CHANNEL_COUNT
+//            )
+//            audioFormat.setInteger(
+//                MediaFormat.KEY_BIT_RATE,
+//                AUDIO_BIT_RATE
+//            )
+//            audioTrackIndex = mediaMuxer?.addTrack(audioFormat)
+//            mediaMuxer?.start()
+//            muxerStarted = true
+//        } catch (e: IOException) {
+//            Log.e(
+//                TAG,
+//                "Error starting muxer",
+//                e
+//            )
+//        }
+//    }
+//
+//    private fun stopMuxer() {
+//        if (muxerStarted) {
+//            mediaMuxer?.apply {
+//                stop()
+//                release()
+//            }
+//            muxerStarted = false
+//        }
+//    }
+//
+//    private fun writeVideoFrame(data: ByteBuffer, info: MediaCodec.BufferInfo) {
+//        if (!muxerStarted){
+//            return
+//        }
+//        try {
+//            data.position(info.offset)
+//            data.limit(info.offset + info.size)
+//            videoTrackIndex?.let {
+//                mediaMuxer?.writeSampleData(it, data, info)
+//            }
+//        } catch (e: Exception) {
+//            Log.e(
+//                TAG,
+//                "Error writing video frame",
+//                e
+//            )
+//        }
+//    }
+//
+//    private fun writeAudioFrame(data: ByteBuffer, info: MediaCodec.BufferInfo) {
+//        if (!muxerStarted){
+//            return
+//        }
+//        try {
+//            data.position(info.offset)
+//            data.limit(info.offset + info.size)
+//            audioTrackIndex?.let {
+//                mediaMuxer?.writeSampleData(it, data, info)
+//            }
+//        } catch (e: Exception) {
+//            Log.e(
+//                TAG,
+//                "Error writing audio frame")
+//        }
+//    }
+//
+//
+//    private class VideoFrame(var buffer: ByteBuffer?, var info: MediaCodec.BufferInfo)
+//
+//    private class AudioFrame(var buffer: ByteBuffer?, var info: MediaCodec.BufferInfo)
 
 
 }
