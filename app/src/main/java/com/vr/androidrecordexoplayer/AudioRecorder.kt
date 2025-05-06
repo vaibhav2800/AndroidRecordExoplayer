@@ -20,8 +20,8 @@ class AudioRecorder(private val outputFilePath: String) {
 
     init {
         // Ensure the output file path is valid and delete if it exists
-        val file = File(outputFilePath)
-        if (file.exists()) file.delete()
+//        val file = File(outputFilePath)
+//        if (file.exists()) file.delete()
     }
 
     fun start() {
@@ -32,7 +32,10 @@ class AudioRecorder(private val outputFilePath: String) {
         // Ensure file is ready
 //        if (!mediaMuxer.isStarted) {
 //        }
-        mediaMuxer.start()
+//        mediaMuxer.start()
+        Log.e("TAG-VAIBHAV","FIle- ${outputFilePath}")
+        recordStart = true
+        startEncoderLoop()
     }
 
     private fun setupAudioEncoder() {
@@ -60,15 +63,25 @@ class AudioRecorder(private val outputFilePath: String) {
 
     fun stop() {
         try {
-            // Signal the end of input stream
-            audioEncoder.signalEndOfInputStream()
+            val inputIndex = audioEncoder.dequeueInputBuffer(10_000)
+            if (inputIndex >= 0) {
+                audioEncoder.queueInputBuffer(
+                    inputIndex,
+                    0,
+                    0,
+                    0,
+                    MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                )
+            }
         } catch (e: Exception) {
             Log.e("AudioRecorder", "Error signaling end of input stream: ${e.message}")
         }
 
+
         // Release resources
         Thread {
             try {
+                recordStart = false
                 // Wait for final data to be written
                 Thread.sleep(1000)
 
@@ -92,11 +105,12 @@ class AudioRecorder(private val outputFilePath: String) {
         }.start()
     }
 
+    var recordStart = false
     private fun startEncoderLoop() {
         Thread {
             val bufferInfo = MediaCodec.BufferInfo()
 
-            while (true) {
+            while (recordStart) {
                 val outputIndex = audioEncoder.dequeueOutputBuffer(bufferInfo, 10_000)
                 if (outputIndex >= 0) {
                     val encodedData = audioEncoder.getOutputBuffer(outputIndex) ?: continue
@@ -121,9 +135,12 @@ class AudioRecorder(private val outputFilePath: String) {
                     audioEncoder.releaseOutputBuffer(outputIndex, false)
                 } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = audioEncoder.outputFormat
+                    Log.e("TAG-VAIBHAV","muxerStarted- ${muxerStarted}")
                     synchronized(muxerLock) {
                         audioTrackIndex = mediaMuxer.addTrack(newFormat)
+                        Log.e("TAG-VAIBHAV","muxerStarted idd--  ${audioTrackIndex}")
                         if (!muxerStarted && audioTrackIndex != -1) {
+                            Log.e("TAG-VAIBHAV","muxerStarted ho gaya bhai")
                             mediaMuxer.start()
                             muxerStarted = true
                         }

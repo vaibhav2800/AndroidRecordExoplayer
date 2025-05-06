@@ -1,41 +1,17 @@
 package com.vr.androidrecordexoplayer
 
 import AudioRecorder
-import android.content.Context
-import android.media.MediaCodec
-import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
-import android.os.Handler
-import android.os.HandlerThread
 import android.util.Log
 import android.widget.Button
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
-import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.exoplayer.ExoPlaybackException
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.audio.AudioRendererEventListener
-import androidx.media3.exoplayer.audio.AudioSink
-import androidx.media3.exoplayer.audio.DefaultAudioSink
-import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
-import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.ui.PlayerView
-import com.vr.androidrecordexoplayer.databinding.ActivityMainBinding
 import java.io.File
-import java.io.IOException
-import java.nio.ByteBuffer
-import java.util.LinkedList
-
 
 /**
  * Main Activity
@@ -46,9 +22,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var startBtn: Button
     private lateinit var stopBtn: Button
-
-//    private lateinit var recorder: StreamRecorder
-//    private lateinit var pcmProcessor: PCMExtractorProcessor
 
     private val streamUrl = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
     private lateinit var audioRecorder: AudioRecorder
@@ -123,13 +96,26 @@ class MainActivity : AppCompatActivity() {
     private fun setupExoPlayerV2() {
 //        pcmProcessor = PCMExtractorProcessor()
 
-        val file = File(getExternalFilesDir(null), "recorded_audio.mp4")
-        if (file.exists()) file.delete()
+//        val file = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "recorded_audio.mp4")
+
+        val outputDir = getExternalFilesDir(null)
+        if(outputDir?.exists()==false){
+            Log.e("TAG-VAIBHAV","Output file createdddd")
+            outputDir?.mkdir()
+        }
+        val file = File(outputDir, "recorded_audio.mp4")
+
+        if (file.exists()) {
+            Log.e("TAG-VAIBHAV","File exists")
+            file.delete()
+        }
+        file.createNewFile()
 
         Log.e("TAG-VAIBHAV","Path-  ${file.absolutePath}")
         audioRecorder = AudioRecorder(file.absolutePath)
 
         recordingAudioProcessor = RecordingAudioProcessor()
+        recordingAudioProcessor.setRecorder(audioRecorder)
         val renderersFactory = CustomRenderersFactory(this, recordingAudioProcessor)
 
         player = ExoPlayer.Builder(this, renderersFactory).build()
@@ -161,7 +147,6 @@ class MainActivity : AppCompatActivity() {
 //        audioRecorder.start()
 
 
-        recordingAudioProcessor.setRecorder(audioRecorder)
 
         audioRecorder.start()
     }
