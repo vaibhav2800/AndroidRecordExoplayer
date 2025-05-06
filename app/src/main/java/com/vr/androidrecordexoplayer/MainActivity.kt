@@ -23,6 +23,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var startBtn: Button
     private lateinit var stopBtn: Button
 
+    private lateinit var recorder: StreamRecorder
     private val streamUrl = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
     private lateinit var audioRecorder: AudioRecorder
     @UnstableApi
@@ -43,7 +44,9 @@ class MainActivity : AppCompatActivity() {
 //        recordingAudioProcessor = RecordingAudioProcessor()
 //        audioRecorder = AudioRecorder(outputFile.absolutePath, recordingAudioProcessor)
 
+        setupStreamRecorder()
         setupExoPlayerV2()
+
 
         startBtn.setOnClickListener { startRecording() }
         stopBtn.setOnClickListener { stopRecording() }
@@ -112,6 +115,7 @@ class MainActivity : AppCompatActivity() {
         file.createNewFile()
 
         Log.e("TAG-VAIBHAV","Path-  ${file.absolutePath}")
+
         audioRecorder = AudioRecorder(file.absolutePath)
 
         recordingAudioProcessor = RecordingAudioProcessor()
@@ -127,11 +131,23 @@ class MainActivity : AppCompatActivity() {
         player.prepare()
         player.playWhenReady = true
     }
+    
 
+    private fun setupStreamRecorder(){
+        val outputFile = "${cacheDir}/recorded_output.mp4"
+        Log.e("TAG-VAIBHAV","FIle Path- ${outputFile}")
+        recorder = StreamRecorder(this, outputFile)
+        recorder.init()
+
+        // Set ExoPlayer output surface to video encoder surface
+         if (::player.isInitialized) {
+            player.setVideoSurface(recorder.getInputSurface())
+         }
+    }
 
 
     @OptIn(UnstableApi::class)
-    private fun startRecording() {
+    private fun startVideoRecording() {
 //        val outputFile = "${cacheDir}/recorded_output.mp4"
 //        Log.e("TAG-VAIBHAV","FIle Path- ${outputFile}")
 //        recorder = StreamRecorder(this, outputFile)
@@ -142,23 +158,35 @@ class MainActivity : AppCompatActivity() {
 //            recorder.queuePcmData(buffer, size, pts)
 //        }
 //
-//        // Set ExoPlayer output surface to video encoder surface
-//        player.setVideoSurface(recorder.getInputSurface())
-//        audioRecorder.start()
+
+        recorder.start()
+    }
+
+    @OptIn(UnstableApi::class)
+
+    private fun startRecording() {
+
+        startVideoRecording()
 
 
-
+        // Send decoded audio PCM to audio encoder
+        recordingAudioProcessor.onPcmData = { buffer, size, pts ->
+            recorder.queuePcmData(buffer, size, pts)
+        }
         audioRecorder.start()
     }
 
     @OptIn(UnstableApi::class)
     private fun stopRecording() {
-//        recorder.stop()
-        recordingAudioProcessor.setRecorder(null)
+        recorder.stop()
         audioRecorder.stop()
     }
 
     override fun onDestroy() {
+        if(::recorder.isInitialized){
+            recorder.release()
+        }
+
         super.onDestroy()
         player.release()
     }
