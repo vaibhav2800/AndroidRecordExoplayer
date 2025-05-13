@@ -44,7 +44,7 @@ class MainActivity : AppCompatActivity() {
 //        recordingAudioProcessor = RecordingAudioProcessor()
 //        audioRecorder = AudioRecorder(outputFile.absolutePath, recordingAudioProcessor)
 
-        setupStreamRecorder()
+//        setupStreamRecorder()
         setupExoPlayerV2()
 
 
@@ -69,13 +69,13 @@ class MainActivity : AppCompatActivity() {
 
         Log.e("TAG-VAIBHAV","Path-  ${file.absolutePath}")
 
-        audioRecorder = AudioRecorder(file.absolutePath)
+//        audioRecorder = AudioRecorder(file.absolutePath)
+//
+//        recordingAudioProcessor = RecordingAudioProcessor()
+//        recordingAudioProcessor.setRecorder(audioRecorder)
+//        val renderersFactory = CustomRenderersFactory(this, recordingAudioProcessor)
 
-        recordingAudioProcessor = RecordingAudioProcessor()
-        recordingAudioProcessor.setRecorder(audioRecorder)
-        val renderersFactory = CustomRenderersFactory(this, recordingAudioProcessor)
-
-        player = ExoPlayer.Builder(this, renderersFactory).build()
+        player = ExoPlayer.Builder(this).build()
         playerView
         playerView.player = player
 
@@ -101,11 +101,11 @@ class MainActivity : AppCompatActivity() {
     @OptIn(UnstableApi::class)
 
     private fun startRecording() {
-        recorder.start()
-        recordingAudioProcessor.onPcmData = { buffer, size, pts ->
-            recorder.queuePcmData(buffer, size, pts)
-        }
-        audioRecorder.start()
+//        recorder.start()
+//        recordingAudioProcessor.onPcmData = { buffer, size, pts ->
+//            recorder.queuePcmData(buffer, size, pts)
+//        }
+//        audioRecorder.start()
     }
 
     @OptIn(UnstableApi::class)
@@ -115,9 +115,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        if(::recorder.isInitialized){
-            recorder.release()
-        }
+//        if(::recorder.isInitialized){
+//            recorder.release()
+//        }
 
         super.onDestroy()
         player.release()
