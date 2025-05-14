@@ -1,35 +1,41 @@
 package com.vr.androidrecordexoplayer
 
-import AudioRecorder
+import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Bundle
-import android.util.Log
+import android.view.View
 import android.widget.Button
-import androidx.annotation.OptIn
+import android.widget.ProgressBar
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
-/**
- * Main Activity
- */
+@UnstableApi
 class MainActivity : AppCompatActivity() {
 
     private lateinit var player: ExoPlayer
     private lateinit var playerView: PlayerView
     private lateinit var startBtn: Button
     private lateinit var stopBtn: Button
+    private lateinit var progressBar: ProgressBar
 
-    private lateinit var recorder: StreamRecorder
     private val streamUrl = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-    private lateinit var audioRecorder: AudioRecorder
-    @UnstableApi
-    private lateinit var recordingAudioProcessor: RecordingAudioProcessor
 
-    @OptIn(UnstableApi::class)
+    private lateinit var audioRecorder: AudioRecorder
+    private lateinit var recordingAudioProcessor: RecordingAudioProcessor
+    private lateinit var streamRecorder: StreamRecorder
+
+    private var isRecording = false
+    private lateinit var outputFile: File
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -37,90 +43,86 @@ class MainActivity : AppCompatActivity() {
         playerView = findViewById(R.id.video_view)
         startBtn = findViewById(R.id.startBtn)
         stopBtn = findViewById(R.id.stopBtn)
+        progressBar = findViewById(R.id.progressBar)
 
-        // 1. Prepare custom RecordingAudioProcessor
-        // 2. Prepare AudioRecorder
-//        val outputFile = File(getExternalFilesDir(Environment.DIRECTORY_MUSIC), "recorded_audio.aac")
-//        recordingAudioProcessor = RecordingAudioProcessor()
-//        audioRecorder = AudioRecorder(outputFile.absolutePath, recordingAudioProcessor)
-
-//        setupStreamRecorder()
-        setupExoPlayerV2()
-
+        setupExoPlayerWithRecording()
 
         startBtn.setOnClickListener { startRecording() }
         stopBtn.setOnClickListener { stopRecording() }
     }
 
-    @OptIn(UnstableApi::class)
-    private fun setupExoPlayerV2() {
-        val outputDir = getExternalFilesDir(null)
-        if(outputDir?.exists()==false){
-            Log.e("TAG-VAIBHAV","Output file createdddd")
-            outputDir?.mkdir()
-        }
-        val file = File(outputDir, "recorded_audio.mp4")
+    private fun setupExoPlayerWithRecording() {
+        outputFile = File(getExternalFilesDir(null), "recorded_output.mp4")
+        if (outputFile.exists()) outputFile.delete()
 
-        if (file.exists()) {
-            Log.e("TAG-VAIBHAV","File exists")
-            file.delete()
-        }
-        file.createNewFile()
+        SharedMuxerState.muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        SharedMuxerState.audioTrackIndex = -1
+        SharedMuxerState.videoTrackIndex = -1
+        SharedMuxerState.muxerStarted = false
 
-        Log.e("TAG-VAIBHAV","Path-  ${file.absolutePath}")
+        audioRecorder = AudioRecorder()
+        recordingAudioProcessor = RecordingAudioProcessor()
+        streamRecorder = StreamRecorder(this)
+        streamRecorder.init()
 
-//        audioRecorder = AudioRecorder(file.absolutePath)
-//
-//        recordingAudioProcessor = RecordingAudioProcessor()
-//        recordingAudioProcessor.setRecorder(audioRecorder)
-//        val renderersFactory = CustomRenderersFactory(this, recordingAudioProcessor)
+        val renderersFactory = CustomRenderersFactory(this, recordingAudioProcessor)
+        player = ExoPlayer.Builder(this, renderersFactory).build()
+        player.setVideoSurface(streamRecorder.getInputSurface())
 
-        player = ExoPlayer.Builder(this).build()
-        playerView
-        playerView.player = player
+//        playerView.player = player
 
         val mediaItem = MediaItem.fromUri(Uri.parse(streamUrl))
         player.setMediaItem(mediaItem)
         player.prepare()
         player.playWhenReady = true
     }
-    
-
-    private fun setupStreamRecorder(){
-        val outputFile = "${cacheDir}/recorded_output.mp4"
-        Log.e("TAG-VAIBHAV","FIle Path- ${outputFile}")
-        recorder = StreamRecorder(this, outputFile)
-        recorder.init()
-
-        // Set ExoPlayer output surface to video encoder surface
-         if (::player.isInitialized) {
-            player.setVideoSurface(recorder.getInputSurface())
-         }
-    }
-
-    @OptIn(UnstableApi::class)
 
     private fun startRecording() {
-//        recorder.start()
-//        recordingAudioProcessor.onPcmData = { buffer, size, pts ->
-//            recorder.queuePcmData(buffer, size, pts)
-//        }
-//        audioRecorder.start()
+        if (isRecording) return
+        isRecording = true
+
+        lifecycleScope.launch(Dispatchers.IO) {
+//            audioRecorder.start()
+//            recordingAudioProcessor.setRecorder(audioRecorder)
+            streamRecorder.start()
+        }
     }
 
-    @OptIn(UnstableApi::class)
     private fun stopRecording() {
-        recorder.stop()
-        audioRecorder.stop()
+        if (!isRecording) return
+        isRecording = false
+
+        SharedMuxerState.audioTrackIndex = -1
+        SharedMuxerState.videoTrackIndex = -1
+
+        runOnUiThread { progressBar.visibility = View.VISIBLE }
+
+        lifecycleScope.launch(Dispatchers.IO) {
+//            audioRecorder.stop()
+            streamRecorder.stop()
+//            audioRecorder.release()
+            streamRecorder.release()
+
+            synchronized(SharedMuxerState.muxerLock) {
+                if (SharedMuxerState.muxerStarted) {
+                    SharedMuxerState.muxer.stop()
+                    SharedMuxerState.muxer.release()
+                    SharedMuxerState.muxerStarted = false
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                progressBar.visibility = View.GONE
+                Toast.makeText(this@MainActivity, "Recording saved: ${outputFile.absolutePath}", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     override fun onDestroy() {
-//        if(::recorder.isInitialized){
-//            recorder.release()
-//        }
-
         super.onDestroy()
         player.release()
+        if (isRecording) {
+            stopRecording()
+        }
     }
-
 }

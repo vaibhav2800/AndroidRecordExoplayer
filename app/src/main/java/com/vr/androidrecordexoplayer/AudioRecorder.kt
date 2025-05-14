@@ -1,152 +1,136 @@
+package com.vr.androidrecordexoplayer
+
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.util.Log
-import java.io.File
 import java.nio.ByteBuffer
 
-class AudioRecorder(private val outputFilePath: String) {
+class AudioRecorder {
 
-    private lateinit var mediaMuxer: MediaMuxer
-    private lateinit var audioEncoder: MediaCodec
-    private var audioTrackIndex = -1
-    private var muxerStarted = false
-    private val muxerLock = Any()
-
+    private var audioEncoder: MediaCodec? = null
     private val sampleRate = 44100
     private val channels = 2 // Stereo
     private val bitRate = 128000
 
-    init {
-        // Ensure the output file path is valid and delete if it exists
-//        val file = File(outputFilePath)
-//        if (file.exists()) file.delete()
-    }
+    @Volatile
+    private var isRecording = false
 
     fun start() {
-        // Initialize AudioEncoder and MediaMuxer
+        isRecording = true
         setupAudioEncoder()
-        mediaMuxer = MediaMuxer(outputFilePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-
-        // Ensure file is ready
-//        if (!mediaMuxer.isStarted) {
-//        }
-//        mediaMuxer.start()
-        Log.e("TAG-VAIBHAV","FIle- ${outputFilePath}")
-        recordStart = true
         startEncoderLoop()
     }
 
     private fun setupAudioEncoder() {
-        // Set up Audio Format
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
         }
-
-        // Create the encoder
-        audioEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-        audioEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        audioEncoder.start()
+        audioEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
+            configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            start()
+        }
     }
 
     fun queuePcmData(pcmBuffer: ByteBuffer, size: Int, presentationTimeUs: Long) {
-        val inputIndex = audioEncoder.dequeueInputBuffer(10_000)
-        if (inputIndex >= 0) {
-            val inputBuffer = audioEncoder.getInputBuffer(inputIndex) ?: return
-            inputBuffer.clear()
-            inputBuffer.put(pcmBuffer)
-            audioEncoder.queueInputBuffer(inputIndex, 0, size, presentationTimeUs, 0)
+        if (!isRecording) return
+        audioEncoder?.let { encoder ->
+            val inputIndex = encoder.dequeueInputBuffer(10_000)
+            if (inputIndex >= 0) {
+                val inputBuffer = encoder.getInputBuffer(inputIndex) ?: return
+                inputBuffer.clear()
+                inputBuffer.put(pcmBuffer)
+                encoder.queueInputBuffer(inputIndex, 0, size, presentationTimeUs, 0)
+            }
         }
     }
 
     fun stop() {
+        isRecording = false
         try {
-            val inputIndex = audioEncoder.dequeueInputBuffer(10_000)
-            if (inputIndex >= 0) {
-                audioEncoder.queueInputBuffer(
-                    inputIndex,
-                    0,
-                    0,
-                    0,
-                    MediaCodec.BUFFER_FLAG_END_OF_STREAM
-                )
-            }
-        } catch (e: Exception) {
-            Log.e("AudioRecorder", "Error signaling end of input stream: ${e.message}")
-        }
-
-
-        // Release resources
-        Thread {
-            try {
-                recordStart = false
-                // Wait for final data to be written
-                Thread.sleep(1000)
-
-                synchronized(muxerLock) {
-                    if (muxerStarted) {
-                        mediaMuxer.stop()
-                        mediaMuxer.release()
-                        muxerStarted = false
-                    }
+            audioEncoder?.let { encoder ->
+                val inputIndex = encoder.dequeueInputBuffer(10_000)
+                if (inputIndex >= 0) {
+                    encoder.queueInputBuffer(
+                        inputIndex,
+                        0,
+                        0,
+                        0,
+                        MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                    )
                 }
-
-                // Release the encoder
-                audioEncoder.stop()
-                audioEncoder.release()
-
-                Log.d("AudioRecorder", "Audio recording stopped and resources released.")
-
-            } catch (e: Exception) {
-                Log.e("AudioRecorder", "Error stopping recording: ${e.message}")
             }
-        }.start()
+        } catch (e: IllegalStateException) {
+            Log.e("AudioRecorder", "Error signaling EOS: ${e.message}")
+        }
     }
 
-    var recordStart = false
     private fun startEncoderLoop() {
-        Thread {
+        val encoderThread = Thread {
             val bufferInfo = MediaCodec.BufferInfo()
+            var sawEOS = false
+            while (!sawEOS) {
+                val encoder = audioEncoder ?: break
 
-            while (recordStart) {
-                val outputIndex = audioEncoder.dequeueOutputBuffer(bufferInfo, 10_000)
-                if (outputIndex >= 0) {
-                    val encodedData = audioEncoder.getOutputBuffer(outputIndex) ?: continue
+                val outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 10_000)
 
-                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                        audioEncoder.releaseOutputBuffer(outputIndex, false)
-                        continue
-                    }
-
-                    if (bufferInfo.size > 0 && muxerStarted) {
-                        encodedData.position(bufferInfo.offset)
-                        encodedData.limit(bufferInfo.offset + bufferInfo.size)
-
-                        // Write the audio data to the muxer
-                        synchronized(muxerLock) {
-                            if (audioTrackIndex >= 0) {
-                                mediaMuxer.writeSampleData(audioTrackIndex, encodedData, bufferInfo)
+                if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = encoder.outputFormat
+                    synchronized(SharedMuxerState.muxerLock) {
+                        if (SharedMuxerState.audioTrackIndex == -1) {
+                            SharedMuxerState.audioTrackIndex = SharedMuxerState.muxer.addTrack(newFormat)
+                            Log.e("AudioRecorder", "Audio track added: ${SharedMuxerState.audioTrackIndex}")
+                            if (SharedMuxerState.videoTrackIndex != -1 && !SharedMuxerState.muxerStarted) {
+                                SharedMuxerState.muxer.start()
+                                SharedMuxerState.muxerStarted = true
+                                Log.e("AudioRecorder", "Muxer started from audio side")
                             }
                         }
                     }
+                    continue
+                }
 
-                    audioEncoder.releaseOutputBuffer(outputIndex, false)
-                } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val newFormat = audioEncoder.outputFormat
-                    Log.e("TAG-VAIBHAV","muxerStarted- ${muxerStarted}")
-                    synchronized(muxerLock) {
-                        audioTrackIndex = mediaMuxer.addTrack(newFormat)
-                        Log.e("TAG-VAIBHAV","muxerStarted idd--  ${audioTrackIndex}")
-                        if (!muxerStarted && audioTrackIndex != -1) {
-                            Log.e("TAG-VAIBHAV","muxerStarted ho gaya bhai")
-                            mediaMuxer.start()
-                            muxerStarted = true
+                if (outputIndex >= 0) {
+                    val encodedData = encoder.getOutputBuffer(outputIndex)
+                    if (encodedData != null) {
+                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
+                            bufferInfo.size > 0 && SharedMuxerState.muxerStarted) {
+                            encodedData.position(bufferInfo.offset)
+                            encodedData.limit(bufferInfo.offset + bufferInfo.size)
+                            synchronized(SharedMuxerState.muxerLock) {
+                                if (SharedMuxerState.audioTrackIndex != -1) {
+                                    SharedMuxerState.muxer.writeSampleData(
+                                        SharedMuxerState.audioTrackIndex,
+                                        encodedData,
+                                        bufferInfo
+                                    )
+                                    Log.e("AudioRecorder", "Audio sample written: size=${bufferInfo.size}")
+                                }
+                            }
+                        }
+                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            sawEOS = true
                         }
                     }
+                    encoder.releaseOutputBuffer(outputIndex, false)
                 }
             }
-        }.start()
+            release()
+        }
+        encoderThread.start()
+    }
+
+
+
+    fun release() {
+        try {
+            audioEncoder?.stop()
+            audioEncoder?.release()
+        } catch (e: Exception) {
+            Log.e("AudioRecorder", "Release error: ${e.message}")
+        } finally {
+            audioEncoder = null
+        }
     }
 }
