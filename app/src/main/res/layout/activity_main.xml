@@ -15,7 +15,7 @@
         app:layout_constraintBottom_toTopOf="@+id/stopBtn"
         app:layout_constraintTop_toBottomOf="@+id/startBtn"
         app:resize_mode="fixed_width"
-        android:visibility="invisible"
+
         app:show_buffering="when_playing"
         app:show_subtitle_button="false"
         app:surface_type="surface_view"
@@ -25,6 +25,7 @@
         android:id="@+id/gl_preview_view"
         android:layout_width="match_parent"
         android:layout_height="0dp"
+        android:visibility="invisible"
         app:layout_constraintBottom_toTopOf="@+id/stopBtn"
         app:layout_constraintTop_toBottomOf="@+id/startBtn"/>
 
