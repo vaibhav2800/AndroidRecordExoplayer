@@ -83,7 +83,7 @@ class MainActivity : AppCompatActivity() {
      */
 
 
-        glPreviewView = findViewById(R.id.gl_preview_view)
+     /*   glPreviewView = findViewById(R.id.gl_preview_view)
         // Wait until previewSurface is available (surfaceCreated called)
         glPreviewView.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
@@ -105,7 +105,7 @@ class MainActivity : AppCompatActivity() {
             }
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
             override fun surfaceDestroyed(holder: SurfaceHolder) {}
-        })
+        })*/
     }
 
     private fun startRecording() {
