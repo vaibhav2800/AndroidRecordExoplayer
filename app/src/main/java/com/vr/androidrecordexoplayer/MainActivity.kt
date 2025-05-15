@@ -3,6 +3,7 @@ package com.vr.androidrecordexoplayer
 import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Bundle
+import android.view.SurfaceHolder
 import android.view.View
 import android.widget.Button
 import android.widget.ProgressBar
@@ -36,6 +37,9 @@ class MainActivity : AppCompatActivity() {
     private var isRecording = false
     private lateinit var outputFile: File
 
+    private lateinit var glPreviewView: GLPreviewView
+    private lateinit var glSurfaceRelay: GLSurfaceRelay
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -64,17 +68,44 @@ class MainActivity : AppCompatActivity() {
         recordingAudioProcessor = RecordingAudioProcessor()
         streamRecorder = StreamRecorder(this)
         streamRecorder.init()
+        recordingAudioProcessor.setRecorder(audioRecorder)
 
-        val renderersFactory = CustomRenderersFactory(this, recordingAudioProcessor)
+  /*      val renderersFactory = CustomRenderersFactory(this, recordingAudioProcessor)
         player = ExoPlayer.Builder(this, renderersFactory).build()
         player.setVideoSurface(streamRecorder.getInputSurface())
-
-//        playerView.player = player
+        playerView.player = player
 
         val mediaItem = MediaItem.fromUri(Uri.parse(streamUrl))
         player.setMediaItem(mediaItem)
         player.prepare()
         player.playWhenReady = true
+
+     */
+
+
+        glPreviewView = findViewById(R.id.gl_preview_view)
+        // Wait until previewSurface is available (surfaceCreated called)
+        glPreviewView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                glSurfaceRelay = GLSurfaceRelay(
+                    encoderSurface = streamRecorder.getInputSurface(),
+                    previewSurface = holder.surface
+                )
+                glSurfaceRelay.start()
+
+                val renderersFactory = CustomRenderersFactory(this@MainActivity, recordingAudioProcessor)
+                player = ExoPlayer.Builder(this@MainActivity, renderersFactory).build()
+                player.setVideoSurface(glSurfaceRelay.getSurface())
+                // No need to set playerView.player, as preview is handled by GLPreviewView
+
+                val mediaItem = MediaItem.fromUri(Uri.parse(streamUrl))
+                player.setMediaItem(mediaItem)
+                player.prepare()
+                player.playWhenReady = true
+            }
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+            override fun surfaceDestroyed(holder: SurfaceHolder) {}
+        })
     }
 
     private fun startRecording() {
@@ -82,7 +113,7 @@ class MainActivity : AppCompatActivity() {
         isRecording = true
 
         lifecycleScope.launch(Dispatchers.IO) {
-//            audioRecorder.start()
+            audioRecorder.start()
 //            recordingAudioProcessor.setRecorder(audioRecorder)
             streamRecorder.start()
         }
@@ -98,9 +129,9 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { progressBar.visibility = View.VISIBLE }
 
         lifecycleScope.launch(Dispatchers.IO) {
-//            audioRecorder.stop()
+            audioRecorder.stop()
             streamRecorder.stop()
-//            audioRecorder.release()
+            audioRecorder.release()
             streamRecorder.release()
 
             synchronized(SharedMuxerState.muxerLock) {

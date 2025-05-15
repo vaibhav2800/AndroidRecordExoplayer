@@ -29,6 +29,7 @@ class StreamRecorder(private val context: Context) {
             setInteger(MediaFormat.KEY_FRAME_RATE, 30)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
+
         videoEncoder = MediaCodec.createEncoderByType("video/avc")
         videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         videoInputSurface = videoEncoder.createInputSurface()
@@ -40,60 +41,6 @@ class StreamRecorder(private val context: Context) {
         startEncoderLoop()
     }
 
-    private fun startEncoderLoop() {
-        encoderThread = Thread {
-            val bufferInfo = MediaCodec.BufferInfo()
-            var sawEOS = false
-            while (!sawEOS) {
-                val outputIndex = videoEncoder.dequeueOutputBuffer(bufferInfo, 10_000)
-
-                if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val newFormat = videoEncoder.outputFormat
-                    synchronized(SharedMuxerState.muxerLock) {
-                        if (SharedMuxerState.videoTrackIndex == -1) {
-                            SharedMuxerState.videoTrackIndex = SharedMuxerState.muxer.addTrack(newFormat)
-                            Log.e("StreamRecorder", "Video track added: ${SharedMuxerState.videoTrackIndex}")
-                            if (SharedMuxerState.audioTrackIndex != -1 && !SharedMuxerState.muxerStarted) {
-                                SharedMuxerState.muxer.start()
-                                SharedMuxerState.muxerStarted = true
-                                Log.e("StreamRecorder", "Muxer started from video side")
-                            }
-                        }
-                    }
-                    continue
-                }
-
-                if (outputIndex >= 0) {
-                    val encodedData = videoEncoder.getOutputBuffer(outputIndex)
-                    if (encodedData != null) {
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
-                            bufferInfo.size > 0 && SharedMuxerState.muxerStarted) {
-                            encodedData.position(bufferInfo.offset)
-                            encodedData.limit(bufferInfo.offset + bufferInfo.size)
-                            synchronized(SharedMuxerState.muxerLock) {
-                                if (SharedMuxerState.videoTrackIndex != -1) {
-                                    SharedMuxerState.muxer.writeSampleData(
-                                        SharedMuxerState.videoTrackIndex,
-                                        encodedData,
-                                        bufferInfo
-                                    )
-                                    Log.e("StreamRecorder", "Writing video sample: size=${bufferInfo.size}")
-                                }
-                            }
-                        }
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            sawEOS = true
-                        }
-                    }
-                    videoEncoder.releaseOutputBuffer(outputIndex, false)
-                }
-            }
-            release()
-        }
-        encoderThread?.start()
-    }
-
-
     fun stop() {
         isRecording = false
         try {
@@ -104,15 +51,69 @@ class StreamRecorder(private val context: Context) {
         }
     }
 
+    private fun startEncoderLoop() {
+        encoderThread = Thread {
+            val bufferInfo = MediaCodec.BufferInfo()
+            var sawEOS = false
+            while (!sawEOS && isRecording) {
+                try {
+                    val outputIndex = videoEncoder.dequeueOutputBuffer(bufferInfo, 10_000)
+                    if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val newFormat = videoEncoder.outputFormat
+                        synchronized(SharedMuxerState.muxerLock) {
+                            if (SharedMuxerState.videoTrackIndex == -1) {
+                                SharedMuxerState.videoTrackIndex = SharedMuxerState.muxer.addTrack(newFormat)
+                                SharedMuxerState.tryStartMuxer()
+                                Log.e("StreamRecorder", "Video track added: ${SharedMuxerState.videoTrackIndex}")
+                                if (SharedMuxerState.audioTrackIndex != -1 && !SharedMuxerState.muxerStarted) {
+                                    SharedMuxerState.muxer.start()
+                                    SharedMuxerState.muxerStarted = true
+                                    Log.e("StreamRecorder", "Muxer started from video side")
+                                }
+                            }
+                        }
+                        continue
+                    }
+                    if (outputIndex >= 0) {
+                        val encodedData = videoEncoder.getOutputBuffer(outputIndex)
+                        if (encodedData != null) {
+                            if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
+                                bufferInfo.size > 0 && SharedMuxerState.muxerStarted) {
+                                encodedData.position(bufferInfo.offset)
+                                encodedData.limit(bufferInfo.offset + bufferInfo.size)
+                                synchronized(SharedMuxerState.muxerLock) {
+                                    if (SharedMuxerState.videoTrackIndex != -1) {
+                                        SharedMuxerState.muxer.writeSampleData(
+                                            SharedMuxerState.videoTrackIndex,
+                                            encodedData,
+                                            bufferInfo
+                                        )
+                                        Log.e("StreamRecorder", "Writing video sample: size=${bufferInfo.size}")
+                                    }
+                                }
+                            }
+                        }
+                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            sawEOS = true
+                        }
+                        videoEncoder.releaseOutputBuffer(outputIndex, false)
+                    }
+                } catch (e: IllegalStateException) {
+                    Log.e("StreamRecorder", "Encoder loop error: ${e.message}")
+                    break
+                }
+            }
+            release()
+        }
+        encoderThread?.start()
+    }
+
     fun release() {
         try {
             videoEncoder.stop()
             videoEncoder.release()
-            if (::videoInputSurface.isInitialized) {
-                videoInputSurface.release()
-            }
         } catch (e: Exception) {
-            Log.e("StreamRecorder", "Error releasing: ${e.message}")
+            Log.e("StreamRecorder", "Release error: ${e.message}")
         }
     }
 }

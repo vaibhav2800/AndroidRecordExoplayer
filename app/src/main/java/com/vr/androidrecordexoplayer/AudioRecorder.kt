@@ -15,6 +15,7 @@ class AudioRecorder {
 
     @Volatile
     private var isRecording = false
+    private var encoderThread: Thread? = null
 
     fun start() {
         isRecording = true
@@ -27,6 +28,7 @@ class AudioRecorder {
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
         }
+
         audioEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).apply {
             configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             start()
@@ -35,6 +37,7 @@ class AudioRecorder {
 
     fun queuePcmData(pcmBuffer: ByteBuffer, size: Int, presentationTimeUs: Long) {
         if (!isRecording) return
+        if (size <= 0) return
         audioEncoder?.let { encoder ->
             val inputIndex = encoder.dequeueInputBuffer(10_000)
             if (inputIndex >= 0) {
@@ -61,67 +64,69 @@ class AudioRecorder {
                     )
                 }
             }
+            encoderThread?.join()
         } catch (e: IllegalStateException) {
             Log.e("AudioRecorder", "Error signaling EOS: ${e.message}")
         }
     }
 
     private fun startEncoderLoop() {
-        val encoderThread = Thread {
+        encoderThread = Thread {
             val bufferInfo = MediaCodec.BufferInfo()
             var sawEOS = false
-            while (!sawEOS) {
+            while (!sawEOS && isRecording) {
                 val encoder = audioEncoder ?: break
-
-                val outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 10_000)
-
-                if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val newFormat = encoder.outputFormat
-                    synchronized(SharedMuxerState.muxerLock) {
-                        if (SharedMuxerState.audioTrackIndex == -1) {
-                            SharedMuxerState.audioTrackIndex = SharedMuxerState.muxer.addTrack(newFormat)
-                            Log.e("AudioRecorder", "Audio track added: ${SharedMuxerState.audioTrackIndex}")
-                            if (SharedMuxerState.videoTrackIndex != -1 && !SharedMuxerState.muxerStarted) {
-                                SharedMuxerState.muxer.start()
-                                SharedMuxerState.muxerStarted = true
-                                Log.e("AudioRecorder", "Muxer started from audio side")
+                try {
+                    val outputIndex = encoder.dequeueOutputBuffer(bufferInfo, 10_000)
+                    if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val audioFormat = encoder.outputFormat
+                        synchronized(SharedMuxerState.muxerLock) {
+                            if (SharedMuxerState.audioTrackIndex == -1) {
+                                SharedMuxerState.audioTrackIndex = SharedMuxerState.muxer.addTrack(audioFormat)
+                                SharedMuxerState.tryStartMuxer()
+                                Log.e("AudioRecorder", "Audio track added: ${SharedMuxerState.audioTrackIndex}")
+                                if (SharedMuxerState.videoTrackIndex != -1 && !SharedMuxerState.muxerStarted) {
+                                    SharedMuxerState.muxer.start()
+                                    SharedMuxerState.muxerStarted = true
+                                    Log.e("AudioRecorder", "Muxer started from audio side")
+                                }
                             }
                         }
+                        continue
                     }
-                    continue
-                }
-
-                if (outputIndex >= 0) {
-                    val encodedData = encoder.getOutputBuffer(outputIndex)
-                    if (encodedData != null) {
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
-                            bufferInfo.size > 0 && SharedMuxerState.muxerStarted) {
-                            encodedData.position(bufferInfo.offset)
-                            encodedData.limit(bufferInfo.offset + bufferInfo.size)
-                            synchronized(SharedMuxerState.muxerLock) {
-                                if (SharedMuxerState.audioTrackIndex != -1) {
-                                    SharedMuxerState.muxer.writeSampleData(
-                                        SharedMuxerState.audioTrackIndex,
-                                        encodedData,
-                                        bufferInfo
-                                    )
-                                    Log.e("AudioRecorder", "Audio sample written: size=${bufferInfo.size}")
+                    if (outputIndex >= 0) {
+                        val encodedData = encoder.getOutputBuffer(outputIndex)
+                        if (encodedData != null) {
+                            if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
+                                bufferInfo.size > 0 && SharedMuxerState.muxerStarted) {
+                                encodedData.position(bufferInfo.offset)
+                                encodedData.limit(bufferInfo.offset + bufferInfo.size)
+                                synchronized(SharedMuxerState.muxerLock) {
+                                    if (SharedMuxerState.audioTrackIndex != -1) {
+                                        SharedMuxerState.muxer.writeSampleData(
+                                            SharedMuxerState.audioTrackIndex,
+                                            encodedData,
+                                            bufferInfo
+                                        )
+                                        Log.e("AudioRecorder", "Audio sample written: size=${bufferInfo.size}")
+                                    }
                                 }
                             }
                         }
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             sawEOS = true
                         }
+                        encoder.releaseOutputBuffer(outputIndex, false)
                     }
-                    encoder.releaseOutputBuffer(outputIndex, false)
+                } catch (e: IllegalStateException) {
+                    Log.e("AudioRecorder", "Encoder loop error: ${e.message}")
+                    break
                 }
             }
             release()
         }
-        encoderThread.start()
+        encoderThread?.start()
     }
-
-
 
     fun release() {
         try {
