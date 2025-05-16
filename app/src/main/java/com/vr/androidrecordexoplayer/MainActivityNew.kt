@@ -31,7 +31,6 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 import kotlin.concurrent.thread
 
-
 @UnstableApi
 class MainActivityNew : AppCompatActivity() {
 
@@ -43,6 +42,7 @@ class MainActivityNew : AppCompatActivity() {
 
     //        private val streamUrl = "rtsps://wowza2.platform.quboworld.com:443/hero-iot-live/3d3b28e6-7016-4aa6-9bc6-d169549f9195?wowzatoken=Z8A4KyOolVs7O2Oyg3dVtQygatJ1OSh1JDonkXHy4guzJSEKAaEV+k4xk5S8csmsvpmR7ZcUSLYPAI67iP0qqJk/8ix+bMG3T9EHYQAu1ww=&sourceDevice=4495db22-d28b-490c-a1a9-62e2370262e6&sessionId=1d74e71c-b16c-47ba-a47f-4cb4cf8c93fe&userUUID=29ddf8f1-ea4e-4925-9174-c246df62fc5e&unitUUID=2994f55b-9acb-4692-b0fe-d7e5c04a6648&?vodContent=true"
     private val streamUrl = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+
     private var isRecording = false
     private var recordStartMs: Long = 0
     private var recordEndMs: Long = 0
@@ -107,6 +107,49 @@ class MainActivityNew : AppCompatActivity() {
         }
     }
 
+    private fun rtspMediaItem(url: String) {
+        val mediaItem = MediaItem.fromUri(Uri.parse(url))
+
+        val rtspMediaSource = RtspMediaSource.Factory()
+        rtspMediaSource.setDebugLoggingEnabled(true)
+        rtspMediaSource.setSocketFactory(getTrustAllSocketFactory())
+        rtspMediaSource.setForceUseRtpTcp(true)
+
+        player.setMediaSource(rtspMediaSource.createMediaSource(mediaItem))
+        player.prepare()
+        player.setPlayWhenReady(true)
+    }
+
+    private fun getTrustAllSocketFactory(): SSLSocketFactory {
+        if (sslSocketFactory != null) {
+            return sslSocketFactory!!
+        }
+        try {
+            val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<X509Certificate?>?, authType: String?) {
+                }
+
+                override fun checkServerTrusted(chain: Array<X509Certificate?>?, authType: String?) {
+                    Log.e("SSL", "⚠️ Trusting all certs. Not recommended for production.")
+                }
+
+                override fun getAcceptedIssuers(): Array<X509Certificate> {
+                    return arrayOf<X509Certificate>()
+                }
+            }
+            )
+
+            val sslContext = SSLContext.getInstance("TLS")
+            sslContext.init(null, trustAllCerts, SecureRandom())
+            sslSocketFactory = sslContext.socketFactory
+        } catch (ex: java.lang.Exception) {
+
+        }
+        return sslSocketFactory!!
+    }
+
+    //Below is the code for Different Type of Recordings..................HTTP/RTSP/P2P  --- ALL
+
     private fun startRecordingHttp() {
         if (isRecording) return
         isRecording = true
@@ -135,44 +178,6 @@ class MainActivityNew : AppCompatActivity() {
                 }
             }
         }
-    }
-
-    private fun startRecordingRTSP() {
-        if (isRecording) return
-        isRecording = true
-        recordStartMs = player.currentPosition
-
-        // Create temporary output file
-        tempOutputFile = File(
-            getExternalFilesDir(Environment.DIRECTORY_MOVIES),
-            "temp_rec_${System.currentTimeMillis()}.mp4"
-        )
-
-        val ffmpegCommand = arrayOf(
-            "-rtsp_transport", "tcp",        // Force TCP transport
-//            "-http_ssl_verify", "0",         // Bypass SSL verification
-            "-i", streamUrl,
-//            "-t", "3600",                   // Maximum record time (1 hour)
-            "-c", "copy",                   // Direct stream copy
-            "-f", "mp4",
-            "-y",                           // Overwrite output file
-            tempOutputFile.absolutePath
-        )
-
-        progressBar.visibility = View.VISIBLE
-        thread {
-            ffmpegExecutionId = FFmpeg.executeAsync(ffmpegCommand) { _, returnCode ->
-                runOnUiThread {
-                    progressBar.visibility = View.GONE
-                    if (returnCode == Config.RETURN_CODE_SUCCESS) {
-                        Log.d("FFmpeg", "Recording saved temporarily")
-                    } else {
-                        Log.d("FFmpeg", "Recording failed -- Do not trust yet (check for file)")
-                    }
-                }
-            }
-        }
-        Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopRecordingHTTP() {
@@ -220,6 +225,44 @@ class MainActivityNew : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun startRecordingRTSP() {
+        if (isRecording) return
+        isRecording = true
+        recordStartMs = player.currentPosition
+
+        // Create temporary output file
+        tempOutputFile = File(
+            getExternalFilesDir(Environment.DIRECTORY_MOVIES),
+            "temp_rec_${System.currentTimeMillis()}.mp4"
+        )
+
+        val ffmpegCommand = arrayOf(
+            "-rtsp_transport", "tcp",        // Force TCP transport
+//            "-http_ssl_verify", "0",         // Bypass SSL verification
+            "-i", streamUrl,
+//            "-t", "3600",                   // Maximum record time (1 hour)
+            "-c", "copy",                   // Direct stream copy
+            "-f", "mp4",
+            "-y",                           // Overwrite output file
+            tempOutputFile.absolutePath
+        )
+
+        progressBar.visibility = View.VISIBLE
+        thread {
+            ffmpegExecutionId = FFmpeg.executeAsync(ffmpegCommand) { _, returnCode ->
+                runOnUiThread {
+                    progressBar.visibility = View.GONE
+                    if (returnCode == Config.RETURN_CODE_SUCCESS) {
+                        Log.d("FFmpeg", "Recording saved temporarily")
+                    } else {
+                        Log.d("FFmpeg", "Recording failed -- Do not trust yet (check for file)")
+                    }
+                }
+            }
+        }
+        Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopRecordingRTSP() {
@@ -275,49 +318,97 @@ class MainActivityNew : AppCompatActivity() {
         }
     }
 
+    //change values below  --- P2P Case
+    private fun startRecordingUDP() {
+        if (isRecording) return
+        isRecording = true
+        recordStartMs = System.currentTimeMillis()
+
+        // Choose your UDP port (must match sender)
+        val udpPort = 1234
+        tempOutputFile = File(
+            getExternalFilesDir(Environment.DIRECTORY_MOVIES),
+            "temp_rec_${System.currentTimeMillis()}.ts"
+        )
+
+        val ffmpegCommand = arrayOf(
+            "-i", "udp://@:$udpPort",
+            "-c", "copy",
+            "-f", "mpegts", // Use MPEG-TS for UDP streams
+            "-y",
+            tempOutputFile.absolutePath
+        )
+
+        progressBar.visibility = View.VISIBLE
+        thread {
+            ffmpegExecutionId = FFmpeg.executeAsync(ffmpegCommand) { _, returnCode ->
+                runOnUiThread {
+                    progressBar.visibility = View.GONE
+                    if (returnCode == Config.RETURN_CODE_SUCCESS) {
+                        Log.d("FFmpeg", "Recording saved temporarily")
+                    } else {
+                        Log.d("FFmpeg", "Recording failed -- Do not trust yet (check for file)")
+                    }
+                }
+            }
+        }
+        Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun stopRecordingUDP() {
+        if (!isRecording) return
+        isRecording = false
+        recordEndMs = System.currentTimeMillis() // Or use player.currentPosition if you want relative time
+
+        // Cancel ongoing FFmpeg process
+        ffmpegExecutionId?.let { FFmpeg.cancel(it) }
+
+        // Wait for file finalization
+        progressBar.visibility = View.VISIBLE
+        thread {
+            Thread.sleep(1000) // Allow file write completion
+
+            if (!tempOutputFile.exists()) {
+                runOnUiThread {
+                    progressBar.visibility = View.GONE
+                    Toast.makeText(this, "No recording found", Toast.LENGTH_SHORT).show()
+                }
+                return@thread
+            }
+
+            val startSec = (recordStartMs / 1000f)
+            val durationSec = ((recordEndMs - recordStartMs) / 1000f)
+
+            val finalOutput = File(
+                getExternalFilesDir(Environment.DIRECTORY_MOVIES),
+                "p2pstreamclip__${System.currentTimeMillis()}.mp4"
+            )
+
+            val trimCommand = arrayOf(
+                "-ss", startSec.toString(),    // Start position
+                "-i", tempOutputFile.absolutePath,
+                "-t", durationSec.toString(),  // Duration
+                "-c", "copy",                  // No re-encoding
+                "-y",
+                finalOutput.absolutePath
+            )
+
+            val rc = FFmpeg.execute(trimCommand)
+            runOnUiThread {
+                progressBar.visibility = View.GONE
+                when (rc) {
+                    Config.RETURN_CODE_SUCCESS -> {
+                        tempOutputFile.delete() // Cleanup temp file
+                        Toast.makeText(this, "Saved: ${finalOutput.name}", Toast.LENGTH_LONG).show()
+                    }
+                    else -> Toast.makeText(this, "Trim failed", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         player.release()
-    }
-
-    private fun rtspMediaItem(url: String) {
-        val mediaItem = MediaItem.fromUri(Uri.parse(url))
-
-        val rtspMediaSource = RtspMediaSource.Factory()
-        rtspMediaSource.setDebugLoggingEnabled(true)
-        rtspMediaSource.setSocketFactory(getTrustAllSocketFactory())
-        rtspMediaSource.setForceUseRtpTcp(true)
-
-        player.setMediaSource(rtspMediaSource.createMediaSource(mediaItem))
-        player.prepare()
-        player.setPlayWhenReady(true)
-    }
-
-    private fun getTrustAllSocketFactory(): SSLSocketFactory {
-        if (sslSocketFactory != null) {
-            return sslSocketFactory!!
-        }
-        try {
-            val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
-                override fun checkClientTrusted(chain: Array<X509Certificate?>?, authType: String?) {
-                }
-
-                override fun checkServerTrusted(chain: Array<X509Certificate?>?, authType: String?) {
-                    Log.e("SSL", "⚠️ Trusting all certs. Not recommended for production.")
-                }
-
-                override fun getAcceptedIssuers(): Array<X509Certificate> {
-                    return arrayOf<X509Certificate>()
-                }
-            }
-            )
-
-            val sslContext = SSLContext.getInstance("TLS")
-            sslContext.init(null, trustAllCerts, SecureRandom())
-            sslSocketFactory = sslContext.socketFactory
-        } catch (ex: java.lang.Exception) {
-
-        }
-        return sslSocketFactory!!
     }
 }
