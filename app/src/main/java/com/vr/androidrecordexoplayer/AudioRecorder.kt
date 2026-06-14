@@ -1,3 +1,5 @@
+package com.vr.androidrecordexoplayer
+
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -7,6 +9,8 @@ import java.io.File
 import java.nio.ByteBuffer
 
 class AudioRecorder(private val outputFilePath: String) {
+
+    private val TAG = "AudioRecorder"
 
     private lateinit var mediaMuxer: MediaMuxer
     private lateinit var audioEncoder: MediaCodec
@@ -33,7 +37,7 @@ class AudioRecorder(private val outputFilePath: String) {
 //        if (!mediaMuxer.isStarted) {
 //        }
 //        mediaMuxer.start()
-        Log.e("TAG-VAIBHAV","FIle- ${outputFilePath}")
+        Log.e(TAG,"FIle- ${outputFilePath}")
         recordStart = true
         startEncoderLoop()
     }
@@ -135,12 +139,12 @@ class AudioRecorder(private val outputFilePath: String) {
                     audioEncoder.releaseOutputBuffer(outputIndex, false)
                 } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = audioEncoder.outputFormat
-                    Log.e("TAG-VAIBHAV","muxerStarted- ${muxerStarted}")
+                    Log.e(TAG,"muxerStarted- ${muxerStarted}")
                     synchronized(muxerLock) {
                         audioTrackIndex = mediaMuxer.addTrack(newFormat)
-                        Log.e("TAG-VAIBHAV","muxerStarted idd--  ${audioTrackIndex}")
+                        Log.e(TAG,"muxerStarted idd--  ${audioTrackIndex}")
                         if (!muxerStarted && audioTrackIndex != -1) {
-                            Log.e("TAG-VAIBHAV","muxerStarted ho gaya bhai")
+                            Log.e(TAG,"muxerStarted ho gaya bhai")
                             mediaMuxer.start()
                             muxerStarted = true
                         }

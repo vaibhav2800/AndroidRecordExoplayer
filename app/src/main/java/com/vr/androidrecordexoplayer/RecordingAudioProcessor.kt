@@ -1,61 +1,65 @@
 package com.vr.androidrecordexoplayer
 
-import AudioRecorder
 import android.util.Log
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import java.nio.ByteBuffer
 
+/**
+ * Taps PCM audio out of ExoPlayer's audio chain and forwards it to [StreamRecorder], while
+ * passing the same PCM through unchanged so playback stays audible.
+ */
 @UnstableApi
-class RecordingAudioProcessor : AudioProcessor {
+class RecordingAudioProcessor : BaseAudioProcessor() {
 
-    @Volatile
-    private var audioRecorder: AudioRecorder? = null
+    @Volatile private var streamRecorder: StreamRecorder? = null
+    @Volatile private var totalBytesQueued = 0L
 
-    private var inputEnded = false
+    private var currentFormat: AudioProcessor.AudioFormat = AudioProcessor.AudioFormat.NOT_SET
 
-    fun setRecorder(recorder: AudioRecorder?) {
-        this.audioRecorder = recorder
+    fun setStreamRecorder(recorder: StreamRecorder?) {
+        if (recorder != null) totalBytesQueued = 0L
+        streamRecorder = recorder
     }
 
-    override fun configure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
-        return inputAudioFormat // No changes to format
-    }
+    fun getAudioFormat(): AudioProcessor.AudioFormat = currentFormat
 
-    override fun isActive(): Boolean {
-        return true // Always active
+    override fun onConfigure(
+        inputAudioFormat: AudioProcessor.AudioFormat
+    ): AudioProcessor.AudioFormat {
+        currentFormat = inputAudioFormat
+        Log.d(
+            "RecordingAudioProcessor",
+            "Configured: ${inputAudioFormat.sampleRate}Hz ch=${inputAudioFormat.channelCount}"
+        )
+        // Return the input format unchanged → this processor is a pass-through tap.
+        return inputAudioFormat
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
-        val presentationTimeUs = System.nanoTime() / 1000
-        Log.e("TAG-VAIBHAV","Data called ${presentationTimeUs}")
-        audioRecorder?.queuePcmData(inputBuffer, inputBuffer.remaining(), presentationTimeUs)
+        val remaining = inputBuffer.remaining()
+        if (remaining == 0) return
 
-        inputBuffer.position(inputBuffer.limit()) // Mark buffer fully consumed
+        val recorder = streamRecorder
+        if (recorder != null && currentFormat.sampleRate > 0) {
+            // PCM_16BIT = 2 bytes per sample per channel.
+            val bytesPerFrame = currentFormat.channelCount * 2
+            val pts = totalBytesQueued * 1_000_000L /
+                    (currentFormat.sampleRate.toLong() * bytesPerFrame)
+            recorder.feedAudio(inputBuffer.duplicate(), remaining, pts)
+            totalBytesQueued += remaining
+        }
+
+        // Copy the PCM into the output buffer so it continues to the audio sink.
+        val output = replaceOutputBuffer(remaining)
+        output.put(inputBuffer)
+        output.flip()
     }
 
-    override fun queueEndOfStream() {
-        inputEnded = true
-    }
-
-    override fun getOutput(): ByteBuffer {
-        return EMPTY_BUFFER // We don't modify output for playback
-    }
-
-    override fun isEnded(): Boolean {
-        return inputEnded
-    }
-
-    override fun flush() {
-        inputEnded = false
-    }
-
-    override fun reset() {
-        flush()
-        audioRecorder = null
-    }
-
-    companion object {
-        private val EMPTY_BUFFER: ByteBuffer = ByteBuffer.allocateDirect(0)
+    override fun onReset() {
+        streamRecorder = null
+        totalBytesQueued = 0L
+        currentFormat = AudioProcessor.AudioFormat.NOT_SET
     }
 }

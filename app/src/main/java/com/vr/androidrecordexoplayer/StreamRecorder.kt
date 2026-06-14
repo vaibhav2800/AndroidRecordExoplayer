@@ -1,165 +1,239 @@
 package com.vr.androidrecordexoplayer
 
-import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.util.Log
 import android.view.Surface
-import java.io.File
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicInteger
 
-class StreamRecorder(
-    private val context: Context,
-    private val outputPath: String
-) {
+class StreamRecorder(private val outputPath: String) {
+
+    companion object {
+        private const val TAG = "StreamRecorder"
+    }
 
     private lateinit var mediaMuxer: MediaMuxer
     private lateinit var videoEncoder: MediaCodec
     private lateinit var audioEncoder: MediaCodec
+    private lateinit var encoderInputSurface: Surface
 
     private var videoTrackIndex = -1
     private var audioTrackIndex = -1
-    private var muxerStarted = false
+
+    @Volatile private var muxerStarted = false
+    @Volatile private var isRecording = false
+    @Volatile private var hasAudio = true
 
     private var videoPtsOffset = -1L
     private var audioPtsOffset = -1L
 
-    private lateinit var videoInputSurface: Surface
+    private val muxerLock = Any()
+    private val finishedEncoders = AtomicInteger(0)
+    private var expectedEncoders = 2
 
-    private val muxerLock = Object()
+    fun getInputSurface(): Surface = encoderInputSurface
 
-    @Volatile
-    private var isRecording = false
-
-    fun getInputSurface(): Surface = videoInputSurface
-
-    fun init(sampleRate: Int = 44100, channels: Int = 2) {
-        // Step 1: Setup Encoders
-        setupVideoEncoder()
-        setupAudioEncoder(sampleRate, channels)
-
-        // Step 2: Setup MediaMuxer
-        val file = File(outputPath)
-        if (file.exists()) file.delete()
+    /**
+     * @param hasAudio set false when the source stream has no audio track. The muxer then
+     *                 starts as soon as the video track is ready instead of waiting forever
+     *                 for an audio track that will never arrive.
+     */
+    fun start(
+        width: Int = 1920,
+        height: Int = 1080,
+        sampleRate: Int = 44100,
+        channelCount: Int = 2,
+        hasAudio: Boolean = true
+    ) {
+        videoTrackIndex = -1
+        audioTrackIndex = -1
+        videoPtsOffset = -1L
+        audioPtsOffset = -1L
+        muxerStarted = false
+        finishedEncoders.set(0)
+        this.hasAudio = hasAudio
+        expectedEncoders = if (hasAudio) 2 else 1
 
         mediaMuxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
 
-        isRecording = true
+        setupVideoEncoder(width, height)
+        if (hasAudio) setupAudioEncoder(sampleRate, channelCount)
 
-        // Step 3: Now start encoder threads
-        startEncoderLoop(videoEncoder, isVideo = true)
-        startEncoderLoop(audioEncoder, isVideo = false)
+        isRecording = true
+        startVideoEncoderLoop()
+        if (hasAudio) startAudioEncoderLoop()
+
+        Log.d(TAG, "Recording started → $outputPath (hasAudio=$hasAudio)")
     }
 
-    private fun setupVideoEncoder() {
-        val format = MediaFormat.createVideoFormat("video/avc", 1280, 720).apply {
+    private fun setupVideoEncoder(width: Int, height: Int) {
+        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, 3_000_000)
+            setInteger(MediaFormat.KEY_BIT_RATE, 5_000_000)
             setInteger(MediaFormat.KEY_FRAME_RATE, 30)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
-
-        videoEncoder = MediaCodec.createEncoderByType("video/avc")
+        videoEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        videoInputSurface = videoEncoder.createInputSurface()
+        encoderInputSurface = videoEncoder.createInputSurface()
         videoEncoder.start()
     }
 
-    private fun setupAudioEncoder(sampleRate: Int, channels: Int) {
-        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
-            setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+    private fun setupAudioEncoder(sampleRate: Int, channelCount: Int) {
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
+            setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
         }
-
         audioEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
         audioEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         audioEncoder.start()
     }
 
-    private fun startEncoderLoop(codec: MediaCodec, isVideo: Boolean) {
-        Thread {
-            val bufferInfo = MediaCodec.BufferInfo()
+    // Called from RecordingAudioProcessor on ExoPlayer's audio thread.
+    fun feedAudio(buffer: ByteBuffer, size: Int, presentationTimeUs: Long) {
+        if (!isRecording || !hasAudio) return
+        try {
+            val inputIndex = audioEncoder.dequeueInputBuffer(5_000)
+            if (inputIndex >= 0) {
+                val inputBuffer = audioEncoder.getInputBuffer(inputIndex) ?: return
+                inputBuffer.clear()
+                val bytesToCopy = minOf(size, inputBuffer.remaining())
+                val slice = buffer.duplicate()
+                slice.limit(slice.position() + bytesToCopy)
+                inputBuffer.put(slice)
+                audioEncoder.queueInputBuffer(inputIndex, 0, bytesToCopy, presentationTimeUs, 0)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "feedAudio error: ${e.message}")
+        }
+    }
 
-            while (isRecording) {
-                val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)
-                if (outputIndex >= 0) {
-                    val encodedData = codec.getOutputBuffer(outputIndex) ?: continue
+    private fun startVideoEncoderLoop() {
+        Thread({
+            val info = MediaCodec.BufferInfo()
+            while (true) {
+                val idx = videoEncoder.dequeueOutputBuffer(info, 10_000)
+                when {
+                    idx >= 0 -> {
+                        val isEos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                        val isConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+                        val buf = videoEncoder.getOutputBuffer(idx)
 
-                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                        codec.releaseOutputBuffer(outputIndex, false)
-                        continue
-                    }
-
-                    if (bufferInfo.size > 0 && muxerStarted) {
-                        encodedData.position(bufferInfo.offset)
-                        encodedData.limit(bufferInfo.offset + bufferInfo.size)
-
-                        val pts = bufferInfo.presentationTimeUs -
-                                if (isVideo) videoPtsOffset else audioPtsOffset
-
-                        bufferInfo.presentationTimeUs = pts
-
-                        synchronized(muxerLock) {
-                            val trackIndex = if (isVideo) videoTrackIndex else audioTrackIndex
-                            if (trackIndex >= 0) {
-                                mediaMuxer.writeSampleData(trackIndex, encodedData, bufferInfo)
+                        if (!isConfig && buf != null && info.size > 0) {
+                            buf.position(info.offset)
+                            buf.limit(info.offset + info.size)
+                            if (videoPtsOffset < 0) videoPtsOffset = info.presentationTimeUs
+                            info.presentationTimeUs = maxOf(0L, info.presentationTimeUs - videoPtsOffset)
+                            synchronized(muxerLock) {
+                                if (muxerStarted && videoTrackIndex >= 0) {
+                                    mediaMuxer.writeSampleData(videoTrackIndex, buf, info)
+                                }
                             }
                         }
+                        videoEncoder.releaseOutputBuffer(idx, false)
+                        if (isEos) break
                     }
-
-                    codec.releaseOutputBuffer(outputIndex, false)
-                } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val newFormat = codec.outputFormat
-                    synchronized(muxerLock) {
-                        if (isVideo) {
-                            videoTrackIndex = mediaMuxer.addTrack(newFormat)
-                            videoPtsOffset = System.nanoTime() / 1000
-                        } else {
-                            audioTrackIndex = mediaMuxer.addTrack(newFormat)
-                            audioPtsOffset = System.nanoTime() / 1000
-                        }
-
-                        if (videoTrackIndex != -1 && audioTrackIndex != -1 && !muxerStarted) {
-                            mediaMuxer.start()
-                            muxerStarted = true
+                    idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        synchronized(muxerLock) {
+                            videoTrackIndex = mediaMuxer.addTrack(videoEncoder.outputFormat)
+                            maybeStartMuxer()
                         }
                     }
                 }
             }
-        }.start()
+            videoEncoder.stop()
+            videoEncoder.release()
+            onEncoderFinished()
+        }, "StreamRecorder-Video").start()
     }
 
-    fun queuePcmData(pcmBuffer: ByteBuffer, size: Int, presentationTimeUs: Long) {
-        val inputIndex = audioEncoder.dequeueInputBuffer(10_000)
-        if (inputIndex >= 0) {
-            val inputBuffer = audioEncoder.getInputBuffer(inputIndex) ?: return
-            inputBuffer.clear()
-            inputBuffer.put(pcmBuffer)
-            audioEncoder.queueInputBuffer(inputIndex, 0, size, presentationTimeUs, 0)
+    private fun startAudioEncoderLoop() {
+        Thread({
+            val info = MediaCodec.BufferInfo()
+            while (true) {
+                val idx = audioEncoder.dequeueOutputBuffer(info, 10_000)
+                when {
+                    idx >= 0 -> {
+                        val isEos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                        val isConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+                        val buf = audioEncoder.getOutputBuffer(idx)
+
+                        if (!isConfig && buf != null && info.size > 0) {
+                            buf.position(info.offset)
+                            buf.limit(info.offset + info.size)
+                            if (audioPtsOffset < 0) audioPtsOffset = info.presentationTimeUs
+                            info.presentationTimeUs = maxOf(0L, info.presentationTimeUs - audioPtsOffset)
+                            synchronized(muxerLock) {
+                                if (muxerStarted && audioTrackIndex >= 0) {
+                                    mediaMuxer.writeSampleData(audioTrackIndex, buf, info)
+                                }
+                            }
+                        }
+                        audioEncoder.releaseOutputBuffer(idx, false)
+                        if (isEos) break
+                    }
+                    idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        synchronized(muxerLock) {
+                            audioTrackIndex = mediaMuxer.addTrack(audioEncoder.outputFormat)
+                            maybeStartMuxer()
+                        }
+                    }
+                }
+            }
+            audioEncoder.stop()
+            audioEncoder.release()
+            onEncoderFinished()
+        }, "StreamRecorder-Audio").start()
+    }
+
+    private fun maybeStartMuxer() {
+        val audioReady = !hasAudio || audioTrackIndex >= 0
+        if (!muxerStarted && videoTrackIndex >= 0 && audioReady) {
+            mediaMuxer.start()
+            muxerStarted = true
+            Log.d(TAG, "MediaMuxer started — tracks ready (hasAudio=$hasAudio)")
+        }
+    }
+
+    private fun onEncoderFinished() {
+        if (finishedEncoders.incrementAndGet() >= expectedEncoders) {
+            synchronized(muxerLock) {
+                try {
+                    if (muxerStarted) mediaMuxer.stop()
+                    mediaMuxer.release()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Muxer release error: ${e.message}")
+                }
+                muxerStarted = false
+            }
+            Log.d(TAG, "Recording saved → $outputPath")
         }
     }
 
     fun stop() {
+        if (!isRecording) return
         isRecording = false
+
+        // Signal video EOS via surface
         try {
             videoEncoder.signalEndOfInputStream()
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "signalEndOfInputStream error: ${e.message}")
+        }
 
-        Thread {
-            Thread.sleep(1000)
-            synchronized(muxerLock) {
-                try {
-                    mediaMuxer.stop()
-                    mediaMuxer.release()
-                } catch (_: Exception) {}
+        // Signal audio EOS via input buffer
+        if (hasAudio) {
+            try {
+                val idx = audioEncoder.dequeueInputBuffer(5_000)
+                if (idx >= 0) {
+                    audioEncoder.queueInputBuffer(idx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Audio EOS error: ${e.message}")
             }
-
-            videoEncoder.stop()
-            videoEncoder.release()
-
-            audioEncoder.stop()
-            audioEncoder.release()
-        }.start()
+        }
     }
 }
